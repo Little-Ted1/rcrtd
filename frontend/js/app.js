@@ -31,6 +31,7 @@ function onPlayerReady(event) {
 }
 
 // 🔌 2. GESTIÓN DEL WEBSOCKET (TIEMPO REAL)
+// REEMPLAZA ESTA FUNCIÓN EN js/app.js
 function initWebSocket() {
     socket = new WebSocket(SERVER_URL);
     const statusBadge = document.getElementById("connection-status");
@@ -38,14 +39,13 @@ function initWebSocket() {
     socket.onopen = () => {
         statusBadge.textContent = "Conectado";
         statusBadge.className = "status-badge connected";
-        console.log("[🔌 WS] Conexión establecida con el Director de Orquesta.");
+        console.log("[🔌 WS] Conexión establecida.");
     };
 
     socket.onclose = () => {
         statusBadge.textContent = "Desconectado";
         statusBadge.className = "status-badge disconnected";
-        console.log("[🔌 WS] Conexión perdida. Reintentando en 5 segundos...");
-        setTimeout(initWebSocket, 5000); // Auto-reconexión robusta
+        setTimeout(initWebSocket, 5000);
     };
 
     socket.onmessage = (event) => {
@@ -61,6 +61,9 @@ function initWebSocket() {
                 break;
             case "PAUSE":
                 handlePauseEvent();
+                break;
+            case "PLAYLIST_UPDATED": // 📥 NUEVO: Escucha cuando cambia la cola
+                updatePlaylistUI(message.playlist);
                 break;
             default:
                 break;
@@ -176,9 +179,34 @@ function initUIListeners() {
     });
 }
 
+
 // 🛠️ UTILIDAD: Extractor de IDs de YouTube mediante Regex seguro
 function extractYouTubeId(url) {
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
     const match = url.match(regExp);
     return (match && match[2].length === 11) ? match[2] : null;
+}
+function updatePlaylistUI(playlist) {
+    const queueList = document.getElementById("playlist-queue");
+    queueList.innerHTML = ""; // Limpia la lista actual
+
+    if (!playlist || playlist.length === 0) {
+        queueList.innerHTML = '<li class="empty-msg">No hay canciones en la cola</li>';
+        return;
+    }
+
+    // Inyecta dinámicamente cada video en el HTML de la barra lateral
+    playlist.forEach((videoId, index) => {
+        const li = document.createElement("li");
+        li.className = "queue-item";
+        li.style.padding = "10px";
+        li.style.marginBottom = "5px";
+        li.style.backgroundColor = "var(--bg-card)";
+        li.style.borderRadius = "6px";
+        li.style.fontSize = "0.85rem";
+        li.style.display = "flex";
+        li.style.justifyContent = "space-between";
+        li.innerHTML = `<span>🎵 Canción #${index + 1} (${videoId})</span>`;
+        queueList.appendChild(li);
+    });
 }
