@@ -146,7 +146,16 @@ function onPlayerStateChange(event) {
 
     const currentTime = player.getCurrentTime();
 
-    if (event.data === YT.PlayerState.PLAYING) {
+    // ⏭️ NUEVO: Si la canción terminó, le pedimos al servidor pasar a la siguiente
+    if (event.data === YT.PlayerState.ENDED) {
+        console.log("[🕹️ UI] La canción ha terminado. Solicitando siguiente pista...");
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                type: "NEXT_TRACK"
+            }));
+        }
+    } 
+    else if (event.data === YT.PlayerState.PLAYING) {
         console.log("[🕹️ UI] Usuario presionó PLAY. Notificando...");
         if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({
