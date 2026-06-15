@@ -97,6 +97,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     "video_id": room_state["current_video"],
                     "seek_to": get_current_video_position()
                 })
+            elif event_type == "REQUEST_CURRENT_TIME":
+                # Este evento es una petición de auxilio de un cliente para saber en qué segundo va la música real.
+                # Le respondemos de inmediato con el tiempo exacto de la sala.
+                await manager.broadcast({
+                    "type": room_state["status"], # Le envía "PLAY" o "PAUSE" según esté la sala
+                    "video_id": room_state["current_video"],
+                    "seek_to": get_current_video_position()
+                })
 
             elif event_type == "PAUSE":
                 room_state["status"] = "PAUSED"
