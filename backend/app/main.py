@@ -86,14 +86,31 @@ async def websocket_endpoint(websocket: WebSocket):
                     "seek_to": get_current_video_position()
                 })
 
-            elif event_type == "PAUSE":
-                if room_state["status"] == "PLAYING":
-                    room_state["status"] = "PAUSED"
-                    room_state["pause_offset"] = time.time() - room_state["start_time"]
-                await manager.broadcast({
-                    "type": "PAUSE",
-                    "seek_to": room_state["pause_offset"]
-                })
+            elif event_type == "ADD_TO_PLAYLIST":
+                video_id = event.get("video_id")
+                if video_id:
+                    # Si no hay nada sonando o el video por defecto es el Rickroll original,
+                    # cambiamos el video actual directamente
+                    if room_state["current_video"] == "dQw4w9WgXcQ" and room_state["status"] == "PAUSED":
+                        room_state["current_video"] = video_id
+                        room_state["status"] = "PLAYING"
+                        room_state["start_time"] = time.time()
+                        
+                        # Notificamos a todos que carguen y reproduzcan el nuevo video
+                        await manager.broadcast({
+                            "type": "PLAY",
+                            "video_id": video_id,
+                            "seek_to": 0.0
+                        })
+                    else:
+                        # Si ya hay música sonando, simplemente lo acumula en la lista
+                        room_state["playlist"].append(video_id)
+                    
+                    # En ambos casos, actualizamos la interfaz de la playlist para todos
+                    await manager.broadcast({
+                        "type": "PLAYLIST_UPDATED",
+                        "playlist": room_state["playlist"]
+                    })
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
