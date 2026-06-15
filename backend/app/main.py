@@ -10,7 +10,7 @@ ORIGINS = [
     "http://localhost:5500",
     "http://127.0.0.1:5500",
     "http://localhost:3000",
-    "https://little-ted1.github.io"
+    "https://little-ted1.github.io/rcrtd/"
 ]
 
 app.add_middleware(
