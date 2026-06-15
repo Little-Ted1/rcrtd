@@ -75,6 +75,11 @@ function initWebSocket() {
 function handleSyncEvent(data) {
     blockNextEvent = true;
     
+    // 📥 NUEVO: Si el servidor nos mandó la playlist en el paquete de sincronización, la pintamos
+    if (data.playlist) {
+        updatePlaylistUI(data.playlist);
+    }
+    
     // Evitar romper la app si el reproductor no ha cargado los metadatos
     try {
         const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
