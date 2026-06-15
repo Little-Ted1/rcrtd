@@ -1,6 +1,6 @@
 // 🌐 CONFIGURACIÓN DEL SERVIDOR
 // Reemplaza con tu URL de Render (Ej: 'radio-backend.onrender.com')
-const SERVER_URL = "ws://localhost:8000/ws"; // En producción usa: wss://tu-app-en-render.onrender.com/ws
+const SERVER_URL = "wss://radio-comunitaria-backend.onrender.com/ws"; // En producción usa: wss://tu-app-en-render.onrender.com/ws
 
 let socket;
 let player;
