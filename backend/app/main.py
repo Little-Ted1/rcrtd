@@ -104,20 +104,25 @@ async def websocket_endpoint(websocket: WebSocket):
             elif event_type == "ADD_TO_PLAYLIST":
                 video_id = event.get("video_id")
                 if video_id:
-                    # Si está el Rickroll por defecto en pausa, se auto-reproduce la nueva de inmediato
-                    if room_state["current_video"] == "dQw4w9WgXcQ" and room_state["status"] == "PAUSED":
+                    # REGLA SENIOR: Si la lista está vacía, esta canción toma el control de inmediato,
+                    # sin importar si el video por defecto se estaba reproduciendo o no.
+                    if len(room_state["playlist"]) == 0 and room_state["current_video"] == "dQw4w9WgXcQ":
                         room_state["current_video"] = video_id
                         room_state["status"] = "PLAYING"
                         room_state["start_time"] = time.time()
                         
+                        # Transmitimos la orden de reproducir el nuevo video al instante
                         await manager.broadcast({
                             "type": "PLAY",
                             "video_id": video_id,
                             "seek_to": 0.0
                         })
                     else:
+                        # Si ya había canciones en espera o ya se estaba reproduciendo música real,
+                        # simplemente se acumula en la cola
                         room_state["playlist"].append(video_id)
                     
+                    # Actualizamos la lista visual en la barra lateral para todos
                     await manager.broadcast({
                         "type": "PLAYLIST_UPDATED",
                         "playlist": room_state["playlist"]
