@@ -6,12 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Radio Comunitaria Streaming - Backend")
 
-# 🔒 SEGURIDAD: CORS (Permite conexiones locales por ahora)
+# 🔒 SEGURIDAD: CORS flexible para producción
 ORIGINS = [
     "http://localhost:5500",
     "http://127.0.0.1:5500",
     "http://localhost:3000",
-    "https://little-ted1.github.io/rcrtd/" # GitHub Pages
+    "https://little-ted1.github.io/rcrtd/"
 ]
 
 app.add_middleware(
@@ -64,6 +64,7 @@ def read_root():
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     
+    # Sincronización completa al entrar (Video, Estado, Tiempo y Playlist)
     initial_sync = {
         "type": "SYNC",
         "video_id": room_state["current_video"],
@@ -82,21 +83,15 @@ async def websocket_endpoint(websocket: WebSocket):
             if event_type == "PLAY":
                 room_state["status"] = "PLAYING"
                 room_state["start_time"] = time.time() - event.get("seek_to", 0.0)
-                
-                # Si el evento PLAY trae un video_id nuevo (desde la playlist), lo actualizamos
-                if event.get("video_id"):
-                    room_state["current_video"] = event.get("video_id")
-
                 await manager.broadcast({
                     "type": "PLAY",
-                    "video_id": room_state["current_video"], # Enviamos siempre el video activo
+                    "video_id": room_state["current_video"],
                     "seek_to": get_current_video_position()
                 })
 
             elif event_type == "PAUSE":
-                if room_state["status"] == "PLAYING":
-                    room_state["status"] = "PAUSED"
-                    room_state["pause_offset"] = time.time() - room_state["start_time"]
+                room_state["status"] = "PAUSED"
+                room_state["pause_offset"] = event.get("seek_to", 0.0)
                 await manager.broadcast({
                     "type": "PAUSE",
                     "seek_to": room_state["pause_offset"]
@@ -105,59 +100,56 @@ async def websocket_endpoint(websocket: WebSocket):
             elif event_type == "ADD_TO_PLAYLIST":
                 video_id = event.get("video_id")
                 if video_id:
-                    # REGLA SENIOR: Si la lista está vacía, esta canción toma el control de inmediato,
-                    # sin importar si el video por defecto se estaba reproduciendo o no.
-                    if len(room_state["playlist"]) == 0 and room_state["current_video"] == "dQw4w9WgXcQ":
+                    # Si está el Rickroll inicial quieto, cambiamos directo a la canción del usuario
+                    if room_state["current_video"] == "dQw4w9WgXcQ" and len(room_state["playlist"]) == 0:
                         room_state["current_video"] = video_id
                         room_state["status"] = "PLAYING"
                         room_state["start_time"] = time.time()
-                        
-                        # Transmitimos la orden de reproducir el nuevo video al instante
                         await manager.broadcast({
                             "type": "PLAY",
                             "video_id": video_id,
                             "seek_to": 0.0
                         })
                     else:
-                        # Si ya había canciones en espera o ya se estaba reproduciendo música real,
-                        # simplemente se acumula en la cola
                         room_state["playlist"].append(video_id)
-                elif event_type == "NEXT_TRACK":
-                # Si hay canciones en la cola de espera
-                if len(room_state["playlist"]) > 0:
-                    # Sacamos la primera canción de la lista
-                    next_video = room_state["playlist"].pop(0)
                     
-                    # Actualizamos el estado global del servidor
+                    await manager.broadcast({
+                        "type": "PLAYLIST_UPDATED",
+                        "playlist": room_state["playlist"]
+                    })
+
+            elif event_type == "NEXT_TRACK":
+                if len(room_state["playlist"]) > 0:
+                    next_video = room_state["playlist"].pop(0)
                     room_state["current_video"] = next_video
                     room_state["status"] = "PLAYING"
                     room_state["start_time"] = time.time()
                     
-                    # 1. Ordenamos a todos reproducir el nuevo video desde el segundo 0
                     await manager.broadcast({
                         "type": "PLAY",
                         "video_id": next_video,
                         "seek_to": 0.0
                     })
-                    # 2. Actualizamos la lista visual de la barra lateral para todos (ya que sacamos una)
-                    await manager.broadcast({
-                        "type": "PLAYLIST_UPDATED",
-                        "playlist": room_state["playlist"]
-                    })
                 else:
-                    # Si no hay más canciones, dejamos el reproductor limpio o en pausa
+                    # Si no hay más, pausamos en el segundo 0
                     room_state["status"] = "PAUSED"
                     room_state["pause_offset"] = 0.0
                     await manager.broadcast({
                         "type": "PAUSE",
                         "seek_to": 0.0
                     })
-                    
-                    # Actualizamos la lista visual en la barra lateral para todos
-                    await manager.broadcast({
-                        "type": "PLAYLIST_UPDATED",
-                        "playlist": room_state["playlist"]
-                    })
+                
+                await manager.broadcast({
+                    "type": "PLAYLIST_UPDATED",
+                    "playlist": room_state["playlist"]
+                })
+
+            elif event_type == "CLEAR_PLAYLIST":
+                room_state["playlist"] = []
+                await manager.broadcast({
+                    "type": "PLAYLIST_UPDATED",
+                    "playlist": room_state["playlist"]
+                })
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
