@@ -4,7 +4,7 @@ let socket;
 let player;
 let blockNextEvent = false;
 let lastKnownTime = 0;
-let seekCheckInterval;
+let userIsSeeking = false; // Candado para evitar el bucle de rebote en los saltos de barra
 
 function onYouTubeIframeAPIReady() {
     player = new YT.Player('yt-player', {
@@ -20,26 +20,31 @@ function onYouTubeIframeAPIReady() {
 }
 
 function onPlayerReady(event) {
-    console.log("[📺 Player] API de YouTube lista.");
+    console.log("[📺 Player] API de YouTube lista. Optimizada para red.");
     initWebSocket();
     initUIListeners();
     
-    // Monitoreo constante para detectar si el usuario arrastra la barra de reproducción (Seek)
+    // Detector de arrastre de barra de tiempo (Seek) con candado anti-rebote
     setInterval(() => {
         if (!player || typeof player.getCurrentTime !== 'function') return;
         const currentTime = player.getCurrentTime();
         
-        // Si el reproductor está sonando y el tiempo salta bruscamente más de 2 segundos...
-        if (player.getPlayerState() === YT.PlayerState.PLAYING && !blockNextEvent) {
-            if (Math.abs(currentTime - lastKnownTime) > 2.5) {
-                console.log("[🕹️ Local] Salto detectado (Seek) hacia el segundo:", currentTime);
+        if (player.getPlayerState() === YT.PlayerState.PLAYING && !blockNextEvent && !userIsSeeking) {
+            // Si el salto es mayor a 2 segundos, es una acción humana real en la barra
+            if (Math.abs(currentTime - lastKnownTime) > 2.0) {
+                console.log("[🕹️ Local] Salto detectado. Bloqueando ruidos de red...");
+                userIsSeeking = true;
+                
                 if (socket && socket.readyState === WebSocket.OPEN) {
                     socket.send(JSON.stringify({ type: "SEEK_GLOBAL", seek_to: currentTime }));
                 }
+                
+                // Desbloqueamos el candado después de 1200ms para dar tiempo a que la API asiente el búfer
+                setTimeout(() => { userIsSeeking = false; }, 1200);
             }
         }
         lastKnownTime = currentTime;
-    }, 500);
+    }, 400);
 }
 
 function initWebSocket() {
@@ -59,7 +64,7 @@ function initWebSocket() {
 
     socket.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        console.log("[🔌 WS] Comando recibido:", message);
+        console.log("[🔌 WS] Comando:", message);
 
         switch (message.type) {
             case "SYNC":
@@ -84,14 +89,13 @@ function initWebSocket() {
     };
 }
 
-// Ejcutor central de comandos remotos (Evita bucles de retroalimentación)
 function executeRemoteCommand(data) {
     blockNextEvent = true;
     
     try {
         const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
         
-        // Cambiar canción de ser necesario
+        // 🔄 Si cambia el video, forzamos carga limpia
         if (data.video_id && currentVideoId !== data.video_id) {
             player.loadVideoById({
                 videoId: data.video_id,
@@ -100,10 +104,12 @@ function executeRemoteCommand(data) {
             return;
         }
 
-        // Sincronizar segundo exacto si hay desfase
+        // 🎯 AJUSTE DE PRECISIÓN SENIOR: Reducimos el margen a solo 1.2 segundos.
+        // Si el desfase de red supera un segundo, reajustamos el reproductor de inmediato.
         if (typeof data.seek_to !== 'undefined') {
             const currentPos = player.getCurrentTime();
-            if (Math.abs(currentPos - data.seek_to) > 3) {
+            if (Math.abs(currentPos - data.seek_to) > 1.2) {
+                console.log("[🎯 Ajuste Fino] Aplicando seek corrector a:", data.seek_to);
                 player.seekTo(data.seek_to, true);
             }
         }
@@ -115,7 +121,6 @@ function executeRemoteCommand(data) {
 }
 
 function onPlayerStateChange(event) {
-    // Si la acción fue gatillada por órdenes del servidor, la consumimos e ignoramos
     if (blockNextEvent) {
         if (event.data === YT.PlayerState.PLAYING || event.data === YT.PlayerState.PAUSED) {
             blockNextEvent = false;
@@ -126,36 +131,34 @@ function onPlayerStateChange(event) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     if (event.data === YT.PlayerState.ENDED) {
-        console.log("[🕹️ Local] Video finalizado de forma natural.");
         socket.send(JSON.stringify({ type: "NEXT_TRACK" }));
     } 
     else if (event.data === YT.PlayerState.PLAYING) {
-        // REGLA 2: Cuando el usuario reanuda (Play), le pide al servidor la hora exacta en vivo
-        console.log("[🕹️ Local] Usuario solicita acoplarse al tiempo en vivo de la sala.");
-        socket.send(JSON.stringify({ type: "REQUEST_LIVE_TIME" }));
+        // Al dar play, si no estamos haciendo un seek manual, pedimos la hora exacta en vivo
+        if (!userIsSeeking) {
+            console.log("[🕹️ Local] Reanudando y acoplándose a la sala en vivo.");
+            socket.send(JSON.stringify({ type: "REQUEST_LIVE_TIME" }));
+        }
     }
-    // REGLA 1 INVISBLE: Si presiona PAUSA, no enviamos nada al WebSocket. Sus amigos siguen escuchando en paz.
 }
 
 function initUIListeners() {
-    // Forzar resincronización manual (Botón de auxilio)
+    // El botón manual ahora ejecuta una petición directa de tiempo en vivo libre de caché
     document.getElementById("btn-sync").addEventListener("click", () => {
         if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "REQUEST_LIVE_TIME" })); 
         }
     });
 
-    // Botón Play/Pause de la UI
     document.getElementById("btn-play-pause").addEventListener("click", () => {
         const state = player.getPlayerState();
         if (state === YT.PlayerState.PLAYING) {
-            player.pauseVideo(); // Pausa local, no afecta al resto
+            player.pauseVideo();
         } else {
-            player.playVideo();  // Solicita tiempo en vivo y se acopla
+            player.playVideo();
         }
     });
 
-    // Añadir pista
     document.getElementById("btn-add-track").addEventListener("click", () => {
         const urlInput = document.getElementById("youtube-url");
         const videoId = extractYouTubeId(urlInput.value.trim());
@@ -168,14 +171,12 @@ function initUIListeners() {
         }
     });
 
-    // Saltar pista manual
     document.getElementById("btn-next").addEventListener("click", () => {
         if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "NEXT_TRACK" }));
         }
     });
 
-    // Vaciar cola
     document.getElementById("btn-clear").addEventListener("click", () => {
         if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "CLEAR_PLAYLIST" }));
