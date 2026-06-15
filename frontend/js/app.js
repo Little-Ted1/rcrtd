@@ -1,6 +1,5 @@
 // 🌐 CONFIGURACIÓN DEL SERVIDOR
-// Reemplaza con tu URL de Render (Ej: 'radio-backend.onrender.com')
-const SERVER_URL = "wss://radio-comunitaria-backend.onrender.com/ws"; // En producción usa: wss://tu-app-en-render.onrender.com/ws
+const SERVER_URL = "wss://radio-comunitaria-backend.onrender.com/ws"; 
 
 let socket;
 let player;
@@ -8,7 +7,6 @@ let isInitialSync = true;
 let blockNextEvent = false; // Evita bucles infinitos entre eventos de UI y WS
 
 // 📺 1. INICIALIZAR LA API DE YOUTUBE
-// Esta función la llama automáticamente el script de YouTube que cargamos en el HTML
 function onYouTubeIframeAPIReady() {
     player = new YT.Player('yt-player', {
         height: '100%',
@@ -72,18 +70,21 @@ function initWebSocket() {
 
 // 🎼 3. LÓGICA DE ORQUESTACIÓN Y SINCRONIZACIÓN
 function handleSyncEvent(data) {
-    // Si es un usuario nuevo o reconexión, sincroniza video y segundo exacto
     blockNextEvent = true;
     
-    // Carga el video si es diferente al actual
-    const currentVideoId = player.getVideoData()['video_id'];
-    if (currentVideoId !== data.video_id) {
-        player.cueVideoById({
-            videoId: data.video_id,
-            startSeconds: data.seek_to
-        });
-    } else {
-        player.seekTo(data.seek_to, true);
+    // Evitar romper la app si el reproductor no ha cargado los metadatos
+    try {
+        const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
+        if (currentVideoId !== data.video_id) {
+            player.cueVideoById({
+                videoId: data.video_id,
+                startSeconds: data.seek_to
+            });
+        } else {
+            player.seekTo(data.seek_to, true);
+        }
+    } catch (e) {
+        console.log("[⚠️ Sincronización] Esperando inicialización completa del reproductor...");
     }
 
     if (data.status === "PLAYING") {
@@ -106,7 +107,78 @@ function handlePauseEvent() {
 
 // 🕹️ 4. CAPTURA DE EVENTOS DEL REPRODUCTOR (Acciones del usuario)
 function onPlayerStateChange(event) {
-    // Si el cambio de estado fue provocado por una orden del servidor, la ignoramos para no retransmitir
     if (blockNextEvent) {
         blockNextEvent = false;
         return;
+    }
+
+    const currentTime = player.getCurrentTime();
+
+    if (event.data === YT.PlayerState.PLAYING) {
+        console.log("[🕹️ UI] Usuario presionó PLAY. Notificando...");
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                type: "PLAY",
+                seek_to: currentTime
+            }));
+        }
+    } 
+    else if (event.data === YT.PlayerState.PAUSED) {
+        console.log("[🕹️ UI] Usuario presionó PAUSA. Notificando...");
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                type: "PAUSE",
+                seek_to: currentTime
+            }));
+        }
+    }
+}
+
+// 🎛️ 5. INTERFAZ DE USUARIO (UI CONTROLS)
+function initUIListeners() {
+    document.getElementById("btn-sync").addEventListener("click", () => {
+        console.log("[🎛️ UI] Solicitando resincronización manual...");
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "PLAY", seek_to: player.getCurrentTime() })); 
+        }
+    });
+
+    document.getElementById("btn-play-pause").addEventListener("click", () => {
+        const state = player.getPlayerState();
+        if (state === YT.PlayerState.PLAYING) {
+            player.pauseVideo();
+        } else {
+            player.playVideo();
+        }
+    });
+
+    document.getElementById("btn-add-track").addEventListener("click", () => {
+        const urlInput = document.getElementById("youtube-url");
+        const url = urlInput.value.trim();
+        
+        if (url) {
+            const videoId = extractYouTubeId(url);
+            if (videoId) {
+                console.log("[🎛️ UI] Enviando nuevo video a la playlist:", videoId);
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({
+                        type: "ADD_TO_PLAYLIST",
+                        video_id: videoId
+                    }));
+                    urlInput.value = "";
+                } else {
+                    alert("⚠️ No estás conectado al servidor en tiempo real.");
+                }
+            } else {
+                alert("⚠️ Por favor, ingresa una URL de YouTube válida.");
+            }
+        }
+    });
+}
+
+// 🛠️ UTILIDAD: Extractor de IDs de YouTube mediante Regex seguro
+function extractYouTubeId(url) {
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = url.match(regExp);
+    return (match && match[2].length === 11) ? match[2] : null;
+}
