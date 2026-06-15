@@ -3,6 +3,8 @@ const SERVER_URL = "wss://radio-comunitaria-backend.onrender.com/ws";
 let socket;
 let player;
 let blockNextEvent = false;
+let lastKnownTime = 0;
+let seekCheckInterval;
 
 function onYouTubeIframeAPIReady() {
     player = new YT.Player('yt-player', {
@@ -18,9 +20,26 @@ function onYouTubeIframeAPIReady() {
 }
 
 function onPlayerReady(event) {
-    console.log("[📺 Player] API Lista.");
+    console.log("[📺 Player] API de YouTube lista.");
     initWebSocket();
     initUIListeners();
+    
+    // Monitoreo constante para detectar si el usuario arrastra la barra de reproducción (Seek)
+    setInterval(() => {
+        if (!player || typeof player.getCurrentTime !== 'function') return;
+        const currentTime = player.getCurrentTime();
+        
+        // Si el reproductor está sonando y el tiempo salta bruscamente más de 2 segundos...
+        if (player.getPlayerState() === YT.PlayerState.PLAYING && !blockNextEvent) {
+            if (Math.abs(currentTime - lastKnownTime) > 2.5) {
+                console.log("[🕹️ Local] Salto detectado (Seek) hacia el segundo:", currentTime);
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ type: "SEEK_GLOBAL", seek_to: currentTime }));
+                }
+            }
+        }
+        lastKnownTime = currentTime;
+    }, 500);
 }
 
 function initWebSocket() {
@@ -40,16 +59,23 @@ function initWebSocket() {
 
     socket.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        console.log("[🔌 WS] Recibido:", message);
+        console.log("[🔌 WS] Comando recibido:", message);
 
         switch (message.type) {
             case "SYNC":
                 if (message.playlist) updatePlaylistUI(message.playlist);
-                handleRemoteControl(message);
+                executeRemoteCommand(message);
                 break;
-            case "PLAY":
-            case "PAUSE":
-                handleRemoteControl(message);
+            case "FORCE_PLAY":
+                executeRemoteCommand(message);
+                break;
+            case "FORCE_PAUSE":
+                blockNextEvent = true;
+                player.pauseVideo();
+                break;
+            case "FORCE_SEEK":
+                blockNextEvent = true;
+                player.seekTo(message.seek_to, true);
                 break;
             case "PLAYLIST_UPDATED":
                 updatePlaylistUI(message.playlist);
@@ -58,89 +84,78 @@ function initWebSocket() {
     };
 }
 
-// 🎼 CONTROL CENTRALIZADO: Procesa las órdenes del servidor sin generar bucles
-function handleRemoteControl(data) {
-    blockNextEvent = true; // Bloqueamos el próximo evento local para no retransmitir al servidor
+// Ejcutor central de comandos remotos (Evita bucles de retroalimentación)
+function executeRemoteCommand(data) {
+    blockNextEvent = true;
     
     try {
         const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
         
-        // Si el servidor indica un video diferente, lo cambiamos a la fuerza
+        // Cambiar canción de ser necesario
         if (data.video_id && currentVideoId !== data.video_id) {
             player.loadVideoById({
                 videoId: data.video_id,
                 startSeconds: data.seek_to || 0
             });
-            if (data.status === "PAUSED") {
-                setTimeout(() => { player.pauseVideo(); }, 500);
-            }
             return;
         }
 
-        // Ajustamos el segundo exacto
+        // Sincronizar segundo exacto si hay desfase
         if (typeof data.seek_to !== 'undefined') {
             const currentPos = player.getCurrentTime();
-            if (Math.abs(currentPos - data.seek_to) > 2) { // Solo salta si el desfase es mayor a 2 segundos
+            if (Math.abs(currentPos - data.seek_to) > 3) {
                 player.seekTo(data.seek_to, true);
             }
         }
 
-        // Aplicamos Play o Pause según ordene el Director de Orquesta
-        if (data.type === "PLAY" || data.status === "PLAYING") {
-            player.playVideo();
-        } else if (data.type === "PAUSE" || data.status === "PAUSED") {
-            player.pauseVideo();
-        }
+        player.playVideo();
     } catch (e) {
-        console.error("Error en sincronización remota:", e);
+        console.error("Error en comando remoto:", e);
     }
 }
 
-// MODIFICA ESTA FUNCIÓN EN TU js/app.js
 function onPlayerStateChange(event) {
+    // Si la acción fue gatillada por órdenes del servidor, la consumimos e ignoramos
     if (blockNextEvent) {
-        blockNextEvent = false;
+        if (event.data === YT.PlayerState.PLAYING || event.data === YT.PlayerState.PAUSED) {
+            blockNextEvent = false;
+        }
         return;
     }
 
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    const currentTime = player.getCurrentTime();
 
     if (event.data === YT.PlayerState.ENDED) {
-        console.log("[🕹️ Local] Canción terminada.");
+        console.log("[🕹️ Local] Video finalizado de forma natural.");
         socket.send(JSON.stringify({ type: "NEXT_TRACK" }));
     } 
     else if (event.data === YT.PlayerState.PLAYING) {
-        // CORRECCIÓN: Al dar PLAY, mandamos un evento especial solicitando el tiempo real de la sala
-        socket.send(JSON.stringify({ type: "REQUEST_CURRENT_TIME" }));
-    } 
-    else if (event.data === YT.PlayerState.PAUSED) {
-        // Nota: Si quieres que tu pausa no detenga a tus amigos, puedes comentar esta línea.
-        // Si la dejas, pausarás la sala completa para todos.
-        socket.send(JSON.stringify({ type: "PAUSE", seek_to: currentTime }));
+        // REGLA 2: Cuando el usuario reanuda (Play), le pide al servidor la hora exacta en vivo
+        console.log("[🕹️ Local] Usuario solicita acoplarse al tiempo en vivo de la sala.");
+        socket.send(JSON.stringify({ type: "REQUEST_LIVE_TIME" }));
     }
+    // REGLA 1 INVISBLE: Si presiona PAUSA, no enviamos nada al WebSocket. Sus amigos siguen escuchando en paz.
 }
 
 function initUIListeners() {
-    // Forzar sincronización manual
+    // Forzar resincronización manual (Botón de auxilio)
     document.getElementById("btn-sync").addEventListener("click", () => {
-        console.log("[🎛️ UI] Forzando resincronización con el servidor...");
         if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: "REQUEST_CURRENT_TIME" })); 
+            socket.send(JSON.stringify({ type: "REQUEST_LIVE_TIME" })); 
         }
     });
 
-    // Botón Play/Pause alternativo
+    // Botón Play/Pause de la UI
     document.getElementById("btn-play-pause").addEventListener("click", () => {
         const state = player.getPlayerState();
         if (state === YT.PlayerState.PLAYING) {
-            player.pauseVideo();
+            player.pauseVideo(); // Pausa local, no afecta al resto
         } else {
-            player.playVideo();
+            player.playVideo();  // Solicita tiempo en vivo y se acopla
         }
     });
 
-    // Añadir canción
+    // Añadir pista
     document.getElementById("btn-add-track").addEventListener("click", () => {
         const urlInput = document.getElementById("youtube-url");
         const videoId = extractYouTubeId(urlInput.value.trim());
@@ -149,18 +164,18 @@ function initUIListeners() {
             socket.send(JSON.stringify({ type: "ADD_TO_PLAYLIST", video_id: videoId }));
             urlInput.value = "";
         } else {
-            alert("URL inválida o sin conexión.");
+            alert("Enlace inválido o error de red.");
         }
     });
 
-    // ⏭️ NUEVO: Botón de Siguiente Canción Manual en el Panel de Controles
+    // Saltar pista manual
     document.getElementById("btn-next").addEventListener("click", () => {
         if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "NEXT_TRACK" }));
         }
     });
 
-    // 🗑️ NUEVO: Botón de Vaciar Lista en el Panel de Controles
+    // Vaciar cola
     document.getElementById("btn-clear").addEventListener("click", () => {
         if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "CLEAR_PLAYLIST" }));
