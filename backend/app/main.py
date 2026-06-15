@@ -81,8 +81,17 @@ async def websocket_endpoint(websocket: WebSocket):
             event_type = event.get("type")
 
             if event_type == "PLAY":
-                room_state["status"] = "PLAYING"
-                room_state["start_time"] = time.time() - event.get("seek_to", 0.0)
+                # Si la sala YA estaba en PLAYING, no alteramos el tiempo de inicio global.
+                # Solo recalculamos para que el usuario que lo solicitó se ponga al día.
+                if room_state["status"] == "PLAYING":
+                    pass 
+                else:
+                    # Si la sala estaba en PAUSE general y alguien le da Play,
+                    # reanudamos el cronómetro global desde donde se había quedado congelado.
+                    room_state["status"] = "PLAYING"
+                    room_state["start_time"] = time.time() - event.get("seek_to", 0.0)
+                
+                # Transmitimos a todos el segundo real exacto del servidor
                 await manager.broadcast({
                     "type": "PLAY",
                     "video_id": room_state["current_video"],
