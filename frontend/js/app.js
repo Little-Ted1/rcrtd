@@ -102,23 +102,34 @@ function handleSyncEvent(data) {
     }
 }
 
-function handlePlayEvent(data) {
+function handleSyncEvent(data) {
     blockNextEvent = true;
     
-    // Si el evento PLAY incluye un video_id, verificamos si hay que cambiar la canción actual
-    if (data.video_id) {
-        const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
-        if (currentVideoId !== data.video_id) {
-            player.loadVideoById({
-                videoId: data.video_id,
-                startSeconds: data.seek_to || 0
-            });
-            return; // loadVideoById ya le da Play automáticamente
-        }
+    // 🔌 CORRECCIÓN: Forzar el dibujado de la playlist apenas llega el paquete SYNC
+    if (data.playlist) {
+        console.log("[📥 SYNC] Inicializando lista de reproducción:", data.playlist);
+        updatePlaylistUI(data.playlist);
     }
     
-    player.seekTo(data.seek_to, true);
-    player.playVideo();
+    try {
+        const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
+        if (currentVideoId !== data.video_id) {
+            player.cueVideoById({
+                videoId: data.video_id,
+                startSeconds: data.seek_to
+            });
+        } else {
+            player.seekTo(data.seek_to, true);
+        }
+    } catch (e) {
+        console.log("[⚠️ Sincronización] Esperando al reproductor...");
+    }
+
+    if (data.status === "PLAYING") {
+        player.playVideo();
+    } else {
+        player.pauseVideo();
+    }
 }
 
 function handlePauseEvent() {
