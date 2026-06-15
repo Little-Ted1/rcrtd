@@ -6,12 +6,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Radio Comunitaria Streaming - Backend")
 
-# 🔒 SEGURIDAD: CORS flexible para producción
 ORIGINS = [
     "http://localhost:5500",
     "http://127.0.0.1:5500",
     "http://localhost:3000",
-    "https://little-ted1.github.io/rcrtd/"
+    "https://little-ted1.github.io"
 ]
 
 app.add_middleware(
@@ -45,9 +44,9 @@ manager = ConnectionManager()
 
 room_state = {
     "current_video": "dQw4w9WgXcQ", # Rickroll por defecto
-    "status": "PAUSED",
-    "start_time": 0.0,
-    "pause_offset": 0.0,
+    "status": "PAUSED",             # PAUSED o PLAYING
+    "start_time": 0.0,              # Timestamp Unix de inicio de la canción
+    "pause_offset": 0.0,            # Por dónde iba si la sala global se detiene por completo
     "playlist": []
 }
 
@@ -64,15 +63,14 @@ def read_root():
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     
-    # Sincronización completa al entrar (Video, Estado, Tiempo y Playlist)
-    initial_sync = {
+    # Sincronización limpia al entrar
+    await websocket.send_text(json.dumps({
         "type": "SYNC",
         "video_id": room_state["current_video"],
         "status": room_state["status"],
         "seek_to": get_current_video_position(),
         "playlist": room_state["playlist"]
-    }
-    await websocket.send_text(json.dumps(initial_sync))
+    }))
 
     try:
         while True:
@@ -80,50 +78,38 @@ async def websocket_endpoint(websocket: WebSocket):
             event = json.loads(data)
             event_type = event.get("type")
 
-            if event_type == "PLAY":
-                # Si la sala YA estaba en PLAYING, no alteramos el tiempo de inicio global.
-                # Solo recalculamos para que el usuario que lo solicitó se ponga al día.
-                if room_state["status"] == "PLAYING":
-                    pass 
-                else:
-                    # Si la sala estaba en PAUSE general y alguien le da Play,
-                    # reanudamos el cronómetro global desde donde se había quedado congelado.
+            # REGLA 1: Petición de tiempo en vivo (Acoplamiento de Playback)
+            if event_type == "REQUEST_LIVE_TIME":
+                if room_state["status"] == "PAUSED":
                     room_state["status"] = "PLAYING"
-                    room_state["start_time"] = time.time() - event.get("seek_to", 0.0)
+                    room_state["start_time"] = time.time() - room_state["pause_offset"]
                 
-                # Transmitimos a todos el segundo real exacto del servidor
                 await manager.broadcast({
-                    "type": "PLAY",
-                    "video_id": room_state["current_video"],
-                    "seek_to": get_current_video_position()
-                })
-            elif event_type == "REQUEST_CURRENT_TIME":
-                # Este evento es una petición de auxilio de un cliente para saber en qué segundo va la música real.
-                # Le respondemos de inmediato con el tiempo exacto de la sala.
-                await manager.broadcast({
-                    "type": room_state["status"], # Le envía "PLAY" o "PAUSE" según esté la sala
+                    "type": "FORCE_PLAY",
                     "video_id": room_state["current_video"],
                     "seek_to": get_current_video_position()
                 })
 
-            elif event_type == "PAUSE":
-                room_state["status"] = "PAUSED"
-                room_state["pause_offset"] = event.get("seek_to", 0.0)
+            # REGLA 3: Salto en la línea de tiempo global (Adelantar / Retrasar)
+            elif event_type == "SEEK_GLOBAL":
+                target_seconds = event.get("seek_to", 0.0)
+                # Reajustamos el reloj base del servidor al nuevo segundo dictado
+                room_state["start_time"] = time.time() - target_seconds
+                
                 await manager.broadcast({
-                    "type": "PAUSE",
-                    "seek_to": room_state["pause_offset"]
+                    "type": "FORCE_SEEK",
+                    "seek_to": target_seconds
                 })
 
             elif event_type == "ADD_TO_PLAYLIST":
                 video_id = event.get("video_id")
                 if video_id:
-                    # Si está el Rickroll inicial quieto, cambiamos directo a la canción del usuario
-                    if room_state["current_video"] == "dQw4w9WgXcQ" and len(room_state["playlist"]) == 0:
+                    if room_state["current_video"] == "dQw4w9WgXcQ" and len(room_state["playlist"]) == 0 and room_state["status"] == "PAUSED":
                         room_state["current_video"] = video_id
                         room_state["status"] = "PLAYING"
                         room_state["start_time"] = time.time()
                         await manager.broadcast({
-                            "type": "PLAY",
+                            "type": "FORCE_PLAY",
                             "video_id": video_id,
                             "seek_to": 0.0
                         })
@@ -143,16 +129,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     room_state["start_time"] = time.time()
                     
                     await manager.broadcast({
-                        "type": "PLAY",
+                        "type": "FORCE_PLAY",
                         "video_id": next_video,
                         "seek_to": 0.0
                     })
                 else:
-                    # Si no hay más, pausamos en el segundo 0
                     room_state["status"] = "PAUSED"
                     room_state["pause_offset"] = 0.0
                     await manager.broadcast({
-                        "type": "PAUSE",
+                        "type": "FORCE_PAUSE",
                         "seek_to": 0.0
                     })
                 
