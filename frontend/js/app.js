@@ -96,8 +96,8 @@ function handleRemoteControl(data) {
     }
 }
 
+// MODIFICA ESTA FUNCIÓN EN TU js/app.js
 function onPlayerStateChange(event) {
-    // Si la orden vino del servidor, consumimos el bloqueo y nos quedamos callados
     if (blockNextEvent) {
         blockNextEvent = false;
         return;
@@ -107,13 +107,16 @@ function onPlayerStateChange(event) {
     const currentTime = player.getCurrentTime();
 
     if (event.data === YT.PlayerState.ENDED) {
-        console.log("[🕹️ Local] Canción terminada de forma natural.");
+        console.log("[🕹️ Local] Canción terminada.");
         socket.send(JSON.stringify({ type: "NEXT_TRACK" }));
     } 
     else if (event.data === YT.PlayerState.PLAYING) {
-        socket.send(JSON.stringify({ type: "PLAY", seek_to: currentTime }));
+        // CORRECCIÓN: Al dar PLAY, mandamos un evento especial solicitando el tiempo real de la sala
+        socket.send(JSON.stringify({ type: "REQUEST_CURRENT_TIME" }));
     } 
     else if (event.data === YT.PlayerState.PAUSED) {
+        // Nota: Si quieres que tu pausa no detenga a tus amigos, puedes comentar esta línea.
+        // Si la dejas, pausarás la sala completa para todos.
         socket.send(JSON.stringify({ type: "PAUSE", seek_to: currentTime }));
     }
 }
@@ -121,8 +124,9 @@ function onPlayerStateChange(event) {
 function initUIListeners() {
     // Forzar sincronización manual
     document.getElementById("btn-sync").addEventListener("click", () => {
+        console.log("[🎛️ UI] Forzando resincronización con el servidor...");
         if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: "PLAY", seek_to: player.getCurrentTime() })); 
+            socket.send(JSON.stringify({ type: "REQUEST_CURRENT_TIME" })); 
         }
     });
 
