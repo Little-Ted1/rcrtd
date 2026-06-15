@@ -99,6 +99,19 @@ function handleSyncEvent(data) {
 
 function handlePlayEvent(data) {
     blockNextEvent = true;
+    
+    // Si el evento PLAY incluye un video_id, verificamos si hay que cambiar la canción actual
+    if (data.video_id) {
+        const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
+        if (currentVideoId !== data.video_id) {
+            player.loadVideoById({
+                videoId: data.video_id,
+                startSeconds: data.seek_to || 0
+            });
+            return; // loadVideoById ya le da Play automáticamente
+        }
+    }
+    
     player.seekTo(data.seek_to, true);
     player.playVideo();
 }
