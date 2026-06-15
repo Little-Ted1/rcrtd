@@ -11,7 +11,7 @@ ORIGINS = [
     "http://localhost:5500",
     "http://127.0.0.1:5500",
     "http://localhost:3000",
-    "https://little-ted1.github.io" # Tu futuro GitHub Pages
+    "https://little-ted1.github.io/rcrtd/" # GitHub Pages
 ]
 
 app.add_middleware(
