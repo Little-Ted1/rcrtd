@@ -68,7 +68,8 @@ async def websocket_endpoint(websocket: WebSocket):
         "type": "SYNC",
         "video_id": room_state["current_video"],
         "status": room_state["status"],
-        "seek_to": get_current_video_position()
+        "seek_to": get_current_video_position(),
+        "playlist": room_state["playlist"]
     }
     await websocket.send_text(json.dumps(initial_sync))
 
