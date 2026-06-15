@@ -1,22 +1,15 @@
-// 🌐 CONFIGURACIÓN DEL SERVIDOR
 const SERVER_URL = "wss://radio-comunitaria-backend.onrender.com/ws"; 
 
 let socket;
 let player;
-let isInitialSync = true;
-let blockNextEvent = false; // Evita bucles infinitos entre eventos de UI y WS
+let blockNextEvent = false;
 
-// 📺 1. INICIALIZAR LA API DE YOUTUBE
 function onYouTubeIframeAPIReady() {
     player = new YT.Player('yt-player', {
         height: '100%',
         width: '100%',
-        videoId: 'dQw4w9WgXcQ', // Video inicial por defecto (Rickroll)
-        playerVars: {
-            'playsinline': 1,
-            'controls': 1,      // Dejamos los controles nativos visibles
-            'disablekb': 0
-        },
+        videoId: 'dQw4w9WgXcQ',
+        playerVars: { 'playsinline': 1, 'controls': 1, 'disablekb': 0 },
         events: {
             'onReady': onPlayerReady,
             'onStateChange': onPlayerStateChange
@@ -25,13 +18,11 @@ function onYouTubeIframeAPIReady() {
 }
 
 function onPlayerReady(event) {
-    console.log("[📺 Player] API de YouTube lista. Conectando al backend...");
+    console.log("[📺 Player] API Lista.");
     initWebSocket();
     initUIListeners();
 }
 
-// 🔌 2. GESTIÓN DEL WEBSOCKET (TIEMPO REAL)
-// REEMPLAZA ESTA FUNCIÓN EN js/app.js
 function initWebSocket() {
     socket = new WebSocket(SERVER_URL);
     const statusBadge = document.getElementById("connection-status");
@@ -39,151 +30,103 @@ function initWebSocket() {
     socket.onopen = () => {
         statusBadge.textContent = "Conectado";
         statusBadge.className = "status-badge connected";
-        console.log("[🔌 WS] Conexión establecida.");
     };
 
     socket.onclose = () => {
         statusBadge.textContent = "Desconectado";
         statusBadge.className = "status-badge disconnected";
-        setTimeout(initWebSocket, 5000);
+        setTimeout(initWebSocket, 4000);
     };
 
     socket.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        console.log("[🔌 WS] Evento recibido:", message);
+        console.log("[🔌 WS] Recibido:", message);
 
         switch (message.type) {
             case "SYNC":
-                handleSyncEvent(message);
+                if (message.playlist) updatePlaylistUI(message.playlist);
+                handleRemoteControl(message);
                 break;
             case "PLAY":
-                handlePlayEvent(message);
-                break;
             case "PAUSE":
-                handlePauseEvent();
+                handleRemoteControl(message);
                 break;
-            case "PLAYLIST_UPDATED": // 📥 NUEVO: Escucha cuando cambia la cola
+            case "PLAYLIST_UPDATED":
                 updatePlaylistUI(message.playlist);
-                break;
-            default:
                 break;
         }
     };
 }
 
-// 🎼 3. LÓGICA DE ORQUESTACIÓN Y SINCRONIZACIÓN
-function handleSyncEvent(data) {
-    blockNextEvent = true;
-    
-    // 📥 NUEVO: Si el servidor nos mandó la playlist en el paquete de sincronización, la pintamos
-    if (data.playlist) {
-        updatePlaylistUI(data.playlist);
-    }
-    
-    // Evitar romper la app si el reproductor no ha cargado los metadatos
-    try {
-        const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
-        if (currentVideoId !== data.video_id) {
-            player.cueVideoById({
-                videoId: data.video_id,
-                startSeconds: data.seek_to
-            });
-        } else {
-            player.seekTo(data.seek_to, true);
-        }
-    } catch (e) {
-        console.log("[⚠️ Sincronización] Esperando inicialización completa del reproductor...");
-    }
-
-    if (data.status === "PLAYING") {
-        player.playVideo();
-    } else {
-        player.pauseVideo();
-    }
-}
-
-function handleSyncEvent(data) {
-    blockNextEvent = true;
-    
-    // 🔌 CORRECCIÓN: Forzar el dibujado de la playlist apenas llega el paquete SYNC
-    if (data.playlist) {
-        console.log("[📥 SYNC] Inicializando lista de reproducción:", data.playlist);
-        updatePlaylistUI(data.playlist);
-    }
+// 🎼 CONTROL CENTRALIZADO: Procesa las órdenes del servidor sin generar bucles
+function handleRemoteControl(data) {
+    blockNextEvent = true; // Bloqueamos el próximo evento local para no retransmitir al servidor
     
     try {
         const currentVideoId = player.getVideoData() ? player.getVideoData()['video_id'] : null;
-        if (currentVideoId !== data.video_id) {
-            player.cueVideoById({
+        
+        // Si el servidor indica un video diferente, lo cambiamos a la fuerza
+        if (data.video_id && currentVideoId !== data.video_id) {
+            player.loadVideoById({
                 videoId: data.video_id,
-                startSeconds: data.seek_to
+                startSeconds: data.seek_to || 0
             });
-        } else {
-            player.seekTo(data.seek_to, true);
+            if (data.status === "PAUSED") {
+                setTimeout(() => { player.pauseVideo(); }, 500);
+            }
+            return;
+        }
+
+        // Ajustamos el segundo exacto
+        if (typeof data.seek_to !== 'undefined') {
+            const currentPos = player.getCurrentTime();
+            if (Math.abs(currentPos - data.seek_to) > 2) { // Solo salta si el desfase es mayor a 2 segundos
+                player.seekTo(data.seek_to, true);
+            }
+        }
+
+        // Aplicamos Play o Pause según ordene el Director de Orquesta
+        if (data.type === "PLAY" || data.status === "PLAYING") {
+            player.playVideo();
+        } else if (data.type === "PAUSE" || data.status === "PAUSED") {
+            player.pauseVideo();
         }
     } catch (e) {
-        console.log("[⚠️ Sincronización] Esperando al reproductor...");
-    }
-
-    if (data.status === "PLAYING") {
-        player.playVideo();
-    } else {
-        player.pauseVideo();
+        console.error("Error en sincronización remota:", e);
     }
 }
 
-function handlePauseEvent() {
-    blockNextEvent = true;
-    player.pauseVideo();
-}
-
-// 🕹️ 4. CAPTURA DE EVENTOS DEL REPRODUCTOR (Acciones del usuario)
 function onPlayerStateChange(event) {
+    // Si la orden vino del servidor, consumimos el bloqueo y nos quedamos callados
     if (blockNextEvent) {
         blockNextEvent = false;
         return;
     }
 
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
     const currentTime = player.getCurrentTime();
 
-    // ⏭️ NUEVO: Si la canción terminó, le pedimos al servidor pasar a la siguiente
     if (event.data === YT.PlayerState.ENDED) {
-        console.log("[🕹️ UI] La canción ha terminado. Solicitando siguiente pista...");
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({
-                type: "NEXT_TRACK"
-            }));
-        }
+        console.log("[🕹️ Local] Canción terminada de forma natural.");
+        socket.send(JSON.stringify({ type: "NEXT_TRACK" }));
     } 
     else if (event.data === YT.PlayerState.PLAYING) {
-        console.log("[🕹️ UI] Usuario presionó PLAY. Notificando...");
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({
-                type: "PLAY",
-                seek_to: currentTime
-            }));
-        }
+        socket.send(JSON.stringify({ type: "PLAY", seek_to: currentTime }));
     } 
     else if (event.data === YT.PlayerState.PAUSED) {
-        console.log("[🕹️ UI] Usuario presionó PAUSA. Notificando...");
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({
-                type: "PAUSE",
-                seek_to: currentTime
-            }));
-        }
+        socket.send(JSON.stringify({ type: "PAUSE", seek_to: currentTime }));
     }
 }
 
-// 🎛️ 5. INTERFAZ DE USUARIO (UI CONTROLS)
 function initUIListeners() {
+    // Forzar sincronización manual
     document.getElementById("btn-sync").addEventListener("click", () => {
-        console.log("[🎛️ UI] Solicitando resincronización manual...");
         if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "PLAY", seek_to: player.getCurrentTime() })); 
         }
     });
 
+    // Botón Play/Pause alternativo
     document.getElementById("btn-play-pause").addEventListener("click", () => {
         const state = player.getPlayerState();
         if (state === YT.PlayerState.PLAYING) {
@@ -193,58 +136,57 @@ function initUIListeners() {
         }
     });
 
+    // Añadir canción
     document.getElementById("btn-add-track").addEventListener("click", () => {
         const urlInput = document.getElementById("youtube-url");
-        const url = urlInput.value.trim();
+        const videoId = extractYouTubeId(urlInput.value.trim());
         
-        if (url) {
-            const videoId = extractYouTubeId(url);
-            if (videoId) {
-                console.log("[🎛️ UI] Enviando nuevo video a la playlist:", videoId);
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                    socket.send(JSON.stringify({
-                        type: "ADD_TO_PLAYLIST",
-                        video_id: videoId
-                    }));
-                    urlInput.value = "";
-                } else {
-                    alert("⚠️ No estás conectado al servidor en tiempo real.");
-                }
-            } else {
-                alert("⚠️ Por favor, ingresa una URL de YouTube válida.");
-            }
+        if (videoId && socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "ADD_TO_PLAYLIST", video_id: videoId }));
+            urlInput.value = "";
+        } else {
+            alert("URL inválida o sin conexión.");
+        }
+    });
+
+    // ⏭️ NUEVO: Botón de Siguiente Canción Manual en el Panel de Controles
+    document.getElementById("btn-next").addEventListener("click", () => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "NEXT_TRACK" }));
+        }
+    });
+
+    // 🗑️ NUEVO: Botón de Vaciar Lista en el Panel de Controles
+    document.getElementById("btn-clear").addEventListener("click", () => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "CLEAR_PLAYLIST" }));
         }
     });
 }
 
-
-// 🛠️ UTILIDAD: Extractor de IDs de YouTube mediante Regex seguro
 function extractYouTubeId(url) {
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
     const match = url.match(regExp);
     return (match && match[2].length === 11) ? match[2] : null;
 }
+
 function updatePlaylistUI(playlist) {
     const queueList = document.getElementById("playlist-queue");
-    queueList.innerHTML = ""; // Limpia la lista actual
+    queueList.innerHTML = "";
 
     if (!playlist || playlist.length === 0) {
         queueList.innerHTML = '<li class="empty-msg">No hay canciones en la cola</li>';
         return;
     }
 
-    // Inyecta dinámicamente cada video en el HTML de la barra lateral
     playlist.forEach((videoId, index) => {
         const li = document.createElement("li");
-        li.className = "queue-item";
         li.style.padding = "10px";
         li.style.marginBottom = "5px";
         li.style.backgroundColor = "var(--bg-card)";
         li.style.borderRadius = "6px";
         li.style.fontSize = "0.85rem";
-        li.style.display = "flex";
-        li.style.justifyContent = "space-between";
-        li.innerHTML = `<span>🎵 Canción #${index + 1} (${videoId})</span>`;
+        li.innerHTML = `🎵 #${index + 1} (${videoId})`;
         queueList.appendChild(li);
     });
 }
