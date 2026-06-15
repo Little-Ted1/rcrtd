@@ -122,6 +122,36 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Si ya había canciones en espera o ya se estaba reproduciendo música real,
                         # simplemente se acumula en la cola
                         room_state["playlist"].append(video_id)
+                elif event_type == "NEXT_TRACK":
+                # Si hay canciones en la cola de espera
+                if len(room_state["playlist"]) > 0:
+                    # Sacamos la primera canción de la lista
+                    next_video = room_state["playlist"].pop(0)
+                    
+                    # Actualizamos el estado global del servidor
+                    room_state["current_video"] = next_video
+                    room_state["status"] = "PLAYING"
+                    room_state["start_time"] = time.time()
+                    
+                    # 1. Ordenamos a todos reproducir el nuevo video desde el segundo 0
+                    await manager.broadcast({
+                        "type": "PLAY",
+                        "video_id": next_video,
+                        "seek_to": 0.0
+                    })
+                    # 2. Actualizamos la lista visual de la barra lateral para todos (ya que sacamos una)
+                    await manager.broadcast({
+                        "type": "PLAYLIST_UPDATED",
+                        "playlist": room_state["playlist"]
+                    })
+                else:
+                    # Si no hay más canciones, dejamos el reproductor limpio o en pausa
+                    room_state["status"] = "PAUSED"
+                    room_state["pause_offset"] = 0.0
+                    await manager.broadcast({
+                        "type": "PAUSE",
+                        "seek_to": 0.0
+                    })
                     
                     # Actualizamos la lista visual en la barra lateral para todos
                     await manager.broadcast({
